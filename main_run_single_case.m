@@ -9,7 +9,7 @@ clear; clc; close all;
 root = fileparts(mfilename('fullpath'));
 addpath(genpath(fullfile(root, 'src')));
 
-g2o_file = fullfile(root, 'datasets', 'robust_suite_g2o', 'cubicle__loop_outlier_05.g2o');
+g2o_file = fullfile(root, 'datasets', 'minimal_g2o', 'parking-garage__loop_outlier_10.g2o');
 out_dir = fullfile(root, 'results', 'single_case');
 
 if exist(out_dir, 'dir') ~= 7

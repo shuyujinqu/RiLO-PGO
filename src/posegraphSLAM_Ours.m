@@ -1,16 +1,17 @@
 
 function result = posegraphSLAM_Ours(vertex, edge, pose_init, opts)
-%POSEGRAPHSLAM_OURS Final lightweight robust backend for paper experiments.
+%POSEGRAPHSLAM_OURS Compact RiLO-PGO backend reference implementation.
 % Strategy:
 %   1) Clean strong floor: PieADMM
-%   2) Optional SL-guided aggressiveness tuning
-%   3) Loop-only residual reweight
+%   2) Unweighted LM refinement from the floor solution
+%   3) Loop-only residual scoring and residual reweighting
 %   4) Weighted LM refinement (soft / hard)
-%   5) Scenario-aware acceptance rule
+%   5) Unified conservative candidate selection
 %
 % Design goal:
-%   - clean graphs: non-degradation vs PieADMM
-%   - disturbed graphs: allow moderate theta increase when fML / t improve a lot
+%   - keep the floor solution as a safe fallback
+%   - accept refinement only when graph-level consistency improves
+%   - evaluate all candidates on the same original unweighted graph metrics
 
 if nargin < 4, opts = struct(); end
 if nargin < 3, pose_init = []; end %#ok<NASGU>
@@ -20,23 +21,19 @@ omega_t = 1; omega_R = 1;
 if isfield(opts,'omega_t') && ~isempty(opts.omega_t), omega_t = opts.omega_t; end
 if isfield(opts,'omega_R') && ~isempty(opts.omega_R), omega_R = opts.omega_R; end
 
-case_name = '';
-if isfield(opts,'current_case_name') && ~isempty(opts.current_case_name)
-    case_name = lower(string(opts.current_case_name));
-end
-scenario = infer_scenario_local(case_name);
-
 cand = struct('name',{},'pose',{},'theta',{},'t',{},'fml',{},'time',{},'mean_loop_res',{},'wmed',{});
 
 % ---------- candidate 1: Pie floor (must match standalone PieADMM as closely as possible) ----------
 opts_pie = set_defaults_local(opts, N);
+timer_floor = tic;
 out1 = posegraphSLAM_gd(vertex, edge, opts_pie);
+time_floor = toc(timer_floor);
 pose1 = anchor_pose1_local(ensure_pose7n_local(out1.pose7n_new, edge));
 [th1, tl1] = metric_edge_sum(edge, pose1);
 [~,~,fml1] = metric_fml(edge, pose1, omega_t, omega_R);
 [loop_mask, r_loop] = loop_residuals_local(edge, pose1, opts_pie.w_t, []);
 mean_loop_res = mean_or_zero_local(r_loop(loop_mask));
-cand(end+1) = mkcand_local('pie_floor', pose1, th1, tl1, fml1, get_time_local(out1), mean_loop_res, 1.0); %#ok<AGROW>
+cand(end+1) = mkcand_local('pie_floor', pose1, th1, tl1, fml1, time_floor, mean_loop_res, 1.0); %#ok<AGROW>
 
 if nnz(loop_mask) == 0
     result = pack_result_local(cand(1));
@@ -60,28 +57,48 @@ fprintf('[hard weights] loops=%d | min=%.3e | med=%.3e | max=%.3e\n', ...
 fprintf('[loop residuals @ pie] theta(mean)=%.3e | terr(mean)=%.3e\n', ...
     mean_loop_theta_local(edge, pose1, loop_mask), mean_loop_t_local(edge, pose1, loop_mask));
 
-% ---------- candidate 2: weighted LM soft ----------
+% ---------- candidate 2: unweighted LM ----------
+try
+    w_unweighted = ones(size(edge,1), 1);
+    opts_lm0 = build_weighted_lm_opts_local(opts, opts_pie, pose1, w_unweighted, N, slcfg, 'unweighted');
+    timer_lm0 = tic;
+    out0 = posegraphSLAM_LM(vertex, edge, opts_lm0);
+    time_lm0 = toc(timer_lm0);
+    pose0 = anchor_pose1_local(ensure_pose7n_local(out0.pose7n_new, edge));
+    [th0, tl0] = metric_edge_sum(edge, pose0);
+    [~,~,fml0] = metric_fml(edge, pose0, omega_t, omega_R);
+    [~, r0] = loop_residuals_local(edge, pose0, opts_pie.w_t, loop_mask);
+    cand(end+1) = mkcand_local('pie_unweighted_lm', pose0, th0, tl0, fml0, time_floor + time_lm0, mean_or_zero_local(r0(loop_mask)), 1.0); %#ok<AGROW>
+catch ME
+    warning('posegraphSLAM_Ours: pie_unweighted_lm failed: %s', ME.message);
+end
+
+% ---------- candidate 3: weighted LM soft ----------
 try
     opts_lm = build_weighted_lm_opts_local(opts, opts_pie, pose1, w_soft, N, slcfg, 'soft');
+    timer_soft = tic;
     out2 = posegraphSLAM_LM(vertex, edge, opts_lm);
+    time_soft = toc(timer_soft);
     pose2 = anchor_pose1_local(ensure_pose7n_local(out2.pose7n_new, edge));
     [th2, tl2] = metric_edge_sum(edge, pose2);
     [~,~,fml2] = metric_fml(edge, pose2, omega_t, omega_R);
     [~, r2] = loop_residuals_local(edge, pose2, opts_pie.w_t, loop_mask);
-    cand(end+1) = mkcand_local('pie_loop_reweight_soft', pose2, th2, tl2, fml2, get_time_local(out1)+get_time_local(out2), mean_or_zero_local(r2(loop_mask)), median(w_soft(loop_mask))); %#ok<AGROW>
+    cand(end+1) = mkcand_local('pie_loop_reweight_soft', pose2, th2, tl2, fml2, time_floor + time_soft, mean_or_zero_local(r2(loop_mask)), median(w_soft(loop_mask))); %#ok<AGROW>
 catch ME
     warning('posegraphSLAM_Ours: pie_loop_reweight_soft failed: %s', ME.message);
 end
 
-% ---------- candidate 3: weighted LM hard ----------
+% ---------- candidate 4: weighted LM hard ----------
 try
     opts_lm2 = build_weighted_lm_opts_local(opts, opts_pie, pose1, w_hard, N, slcfg, 'hard');
+    timer_hard = tic;
     out3 = posegraphSLAM_LM(vertex, edge, opts_lm2);
+    time_hard = toc(timer_hard);
     pose3 = anchor_pose1_local(ensure_pose7n_local(out3.pose7n_new, edge));
     [th3, tl3] = metric_edge_sum(edge, pose3);
     [~,~,fml3] = metric_fml(edge, pose3, omega_t, omega_R);
     [~, r3] = loop_residuals_local(edge, pose3, opts_pie.w_t, loop_mask);
-    cand(end+1) = mkcand_local('pie_loop_reweight_hard', pose3, th3, tl3, fml3, get_time_local(out1)+get_time_local(out3), mean_or_zero_local(r3(loop_mask)), median(w_hard(loop_mask))); %#ok<AGROW>
+    cand(end+1) = mkcand_local('pie_loop_reweight_hard', pose3, th3, tl3, fml3, time_floor + time_hard, mean_or_zero_local(r3(loop_mask)), median(w_hard(loop_mask))); %#ok<AGROW>
 catch ME
     warning('posegraphSLAM_Ours: pie_loop_reweight_hard failed: %s', ME.message);
 end
@@ -92,29 +109,13 @@ for ii = 1:numel(cand)
         cand(ii).name, cand(ii).theta, cand(ii).t, cand(ii).fml, cand(ii).mean_loop_res, cand(ii).time);
 end
 
-best = cand(1);
-for ii = 2:numel(cand)
-    if accept_over_best_local(cand(ii), best, scenario)
-        best = cand(ii);
-    end
-end
+selection = select_conservative_local(cand, opts);
+best = cand(selection.selected_index);
 
 result = pack_result_local(best);
 result.selected_candidate = best.name;
 result.candidates = cand;
-result.scenario = scenario;
-end
-
-function scenario = infer_scenario_local(case_name)
-if contains(case_name,'clean_copy')
-    scenario = 'clean';
-elseif contains(case_name,'outlier') || contains(case_name,'mixed')
-    scenario = 'outlier';
-elseif contains(case_name,'rotnoise') || contains(case_name,'transnoise')
-    scenario = 'noise';
-else
-    scenario = 'generic';
-end
+result.selection = selection;
 end
 
 function slcfg = get_sl_tuning_local(vertex, edge, opts)
@@ -281,33 +282,98 @@ function c = mkcand_local(name, pose, th, tl, fml, time, mean_loop_res, wmed)
 c = struct('name',name,'pose',pose,'theta',th,'t',tl,'fml',fml,'time',time,'mean_loop_res',mean_loop_res,'wmed',wmed);
 end
 
-function tf = accept_over_best_local(cand, best, scenario)
-ratio_th   = cand.theta / max(best.theta, 1e-12);
-ratio_t    = cand.t     / max(best.t,     1e-12);
-ratio_fml  = cand.fml   / max(best.fml,   1e-12);
-ratio_loop = cand.mean_loop_res / max(best.mean_loop_res, 1e-12);
+function selection = select_conservative_local(cand, opts)
+%SELECT_CONSERVATIVE_LOCAL Unified graph-consistency candidate gate.
+%
+% The floor solution is always valid. Each non-floor candidate is evaluated
+% on the original unweighted graph and is rejected if it degrades either the
+% total graph objective or the rotational consistency beyond fixed global
+% tolerances. Among admissible candidates, the least aggressive candidate is
+% preferred only as a final tie-breaker.
 
-switch scenario
-    case 'clean'
-        tf = (ratio_fml < 0.995 && ratio_th <= 1.02 && ratio_t <= 1.02) || ...
-             (ratio_t < 0.97 && ratio_th <= 1.02) || ...
-             (ratio_th < 0.97 && ratio_t <= 1.02);
-    case {'outlier','noise'}
-        tf = false;
-        if (ratio_fml < 0.85) && (ratio_t < 0.80) && (ratio_th <= 1.40)
-            tf = true; return;
-        end
-        if (ratio_fml < 0.92) && (ratio_t < 0.90) && (ratio_th <= 1.35)
-            tf = true; return;
-        end
-        if (ratio_loop < 0.80) && (ratio_fml < 0.96) && (ratio_th <= 1.30)
-            tf = true; return;
-        end
-        if (ratio_t < 0.75) && (ratio_th <= 1.45)
-            tf = true; return;
-        end
+cfg = selection_cfg_local(opts);
+floor_cand = cand(1);
+num_cand = numel(cand);
+
+admissible = false(1, num_cand);
+reasons = repmat({''}, 1, num_cand);
+admissible(1) = true;
+reasons{1} = 'floor fallback';
+
+for ii = 2:num_cand
+    fml_degrades = cand(ii).fml > floor_cand.fml * (1 + cfg.eps_f_degrade);
+    theta_degrades = cand(ii).theta > floor_cand.theta * (1 + cfg.eps_theta_max);
+
+    if fml_degrades
+        reasons{ii} = 'rejected: fML degradation';
+        continue;
+    end
+    if theta_degrades
+        reasons{ii} = 'rejected: theta degradation';
+        continue;
+    end
+
+    improves_fml = cand(ii).fml < floor_cand.fml * (1 - cfg.delta_f);
+    improves_t = cand(ii).t < floor_cand.t * (1 - cfg.delta_t);
+    theta_soft_ok = cand(ii).theta <= floor_cand.theta * (1 + cfg.eps_theta_soft);
+
+    if improves_fml || (improves_t && theta_soft_ok)
+        admissible(ii) = true;
+        reasons{ii} = 'admissible';
+    else
+        reasons{ii} = 'rejected: insufficient improvement';
+    end
+end
+
+pool = find(admissible);
+non_floor_pool = pool(pool ~= 1);
+if isempty(non_floor_pool)
+    selected_index = 1;
+else
+    order_rows = zeros(numel(non_floor_pool), 4);
+    for kk = 1:numel(non_floor_pool)
+        ii = non_floor_pool(kk);
+        order_rows(kk,:) = [cand(ii).fml, cand(ii).t, candidate_priority_local(cand(ii).name), ii];
+    end
+    order_rows = sortrows(order_rows, [1 2 3]);
+    selected_index = order_rows(1,4);
+end
+
+selection = struct();
+selection.selected_index = selected_index;
+selection.selected_candidate = cand(selected_index).name;
+selection.admissible = admissible;
+selection.reasons = reasons;
+selection.thresholds = cfg;
+end
+
+function cfg = selection_cfg_local(opts)
+cfg = struct();
+cfg.eps_f_degrade = get_opt_scalar_local(opts, 'eps_f_degrade', 0.01);
+cfg.eps_theta_max = get_opt_scalar_local(opts, 'eps_theta_max', 0.15);
+cfg.eps_theta_soft = get_opt_scalar_local(opts, 'eps_theta_soft', 0.05);
+cfg.delta_f = get_opt_scalar_local(opts, 'delta_f', 0.01);
+cfg.delta_t = get_opt_scalar_local(opts, 'delta_t', 0.10);
+end
+
+function value = get_opt_scalar_local(opts, name, default_value)
+if isfield(opts, name) && ~isempty(opts.(name))
+    value = opts.(name);
+else
+    value = default_value;
+end
+end
+
+function p = candidate_priority_local(name)
+switch char(name)
+    case 'pie_unweighted_lm'
+        p = 1;
+    case 'pie_loop_reweight_soft'
+        p = 2;
+    case 'pie_loop_reweight_hard'
+        p = 3;
     otherwise
-        tf = (ratio_fml < 0.90 && ratio_t < 0.85 && ratio_th <= 1.30);
+        p = 9;
 end
 end
 

@@ -1,0 +1,9 @@
+# MATLAB outputs
+results/*
+!results/.gitkeep
+*.asv
+*.m~
+*.tmp
+*.log
+.DS_Store
+Thumbs.db

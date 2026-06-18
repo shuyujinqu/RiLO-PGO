@@ -7,9 +7,8 @@ function result = posegraphSLAM_gd(varargin)
 %   t-step : sparse linear solve for translations
 %   penalty rho grows each iteration (standard ADMM schedule)
 %
-% This is deliberately a clean re-implementation that does NOT share any
-% code with posegraphSLAM_Ours / RiemannianAA_GNC_vMF.
-% Reference: PieADMM, Huang et al. IROS 2021.
+% This compact floor-solver implementation is included only to make the
+% public RiLO-PGO reference package runnable without external solver code.
 
     % ---- parse args (same signatures as before) ----
     if nargin>=3 && isnumeric(varargin{1}) && isstruct(varargin{nargin})

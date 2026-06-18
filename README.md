@@ -1,69 +1,121 @@
-# RiLO-PGO Open-Source Package
+# RiLO-PGO Compact Reference Implementation
 
-This package is the compact public version of the project.
+This repository is a compact public reference package for RiLO-PGO:
 
-It keeps only:
+> Loop-outlier-aware Riemannian pose-graph optimization for robust visual localization.
 
-- the RiLO-PGO pipeline and the utility functions it needs
-- a disturbed SE(3) `.g2o` benchmark suite for quick testing
-- two clean entry scripts for public use
+The package is intentionally small. It is designed to make the proposed
+backend refinement mechanism inspectable and runnable without exposing the
+full internal research repository, historical experiment scripts, paper-only
+plotting utilities, or unrelated baseline implementations.
 
-It intentionally removes:
+## What Is Included
 
-- comparison pipelines for other back-end methods
-- paper-only plotting scripts
-- historical drafts, cached figures, and temporary experiments
-- unrelated branches such as EuRoC maintenance code and old archive folders
+- Core RiLO-PGO MATLAB implementation.
+- PieADMM-style floor solving used as the default floor path in this package.
+- LM refinement from the floor solution.
+- Loop-specific residual scoring.
+- Soft and hard loop-edge reweighting.
+- Unified conservative candidate selection.
+- Two representative `.g2o` pose-graph examples for a quick smoke test.
+
+The full candidate pool implemented here is:
+
+1. `pie_floor`
+2. `pie_unweighted_lm`
+3. `pie_loop_reweight_soft`
+4. `pie_loop_reweight_hard`
+
+All candidates are evaluated on the same original unweighted graph metrics.
+The floor solution is always retained as a fallback.
+
+## What Is Not Included
+
+- Complete internal experiment-management scripts.
+- Historical drafts and cached paper figures.
+- Full plotting pipelines used only for manuscript preparation.
+- Large raw-data archives.
+- Complete third-party SLAM systems.
+- Baseline implementations that are not needed to inspect the RiLO-PGO logic.
+
+This scope keeps the release focused on the algorithm introduced in the paper.
 
 ## Folder Layout
 
 ```text
-rilo_pgo_open_source/
+rilo_pgo_open_source_reviewer_ready/
   README.md
   main_run_single_case.m
-  main_run_rilo_suite.m
+  main_run_minimal_suite.m
   datasets/
-    robust_suite_g2o/
+    minimal_g2o/
+      parking-garage__loop_outlier_10.g2o
+      tinyGrid3D__loop_outlier_10.g2o
   results/
   src/
-    run_rilo_case.m
     posegraphSLAM_Ours.m
-    posegraphSLAM_RiemannianAA_GNC_vMF.m
     posegraphSLAM_gd.m
     posegraphSLAM_LM.m
+    parse_g2o_se3quat.m
+    metric_edge_sum.m
+    metric_fml.m
     ...
 ```
 
 ## Quick Start
 
-Open MATLAB in `rilo_pgo_open_source` and run:
+Open MATLAB in this folder and run:
 
 ```matlab
 main_run_single_case
 ```
 
-This will:
+This script loads one disturbed pose graph, runs the RiLO-PGO backend
+refinement pipeline, and writes:
 
-- load one disturbed graph from `datasets/robust_suite_g2o`
-- optimize it with RiLO-PGO
-- save `optimized.g2o`, `metrics.txt`, `result.mat`, and `traj3d.png`
+- `optimized.g2o`
+- `metrics.txt`
+- `result.mat`
+- `traj3d.png`
 
-## Batch Run
+to `results/single_case/`.
 
-To process the full disturbed suite:
+To run both public example graphs:
 
 ```matlab
-main_run_rilo_suite
+main_run_minimal_suite
 ```
 
-Outputs are written to:
+The batch summary is written to `results/suite_run/summary.csv`.
 
-- `results/suite_run/rilo_suite_results.mat`
-- `results/suite_run/summary.csv`
-- one subfolder per dataset with the optimized graph and a simple figure
+## Conservative Selection Rule
+
+The public implementation uses one fixed candidate-selection rule for all
+examples. The default thresholds are:
+
+```text
+eps_f_degrade  = 0.01
+eps_theta_max  = 0.15
+eps_theta_soft = 0.05
+delta_f        = 0.01
+delta_t        = 0.10
+```
+
+For each non-floor candidate, the rule rejects the candidate if it degrades
+the original graph objective or rotational consistency beyond the above
+tolerances. Among admissible candidates, the selected solution is the one
+with the smallest original-graph `fML`; ties are broken by smaller
+translation loss and then by the less aggressive candidate order:
+
+```text
+unweighted LM -> soft weighted LM -> hard weighted LM
+```
 
 ## Notes
 
-- The public package defaults to `use_sl = false` to keep setup simple.
-- `posegraphSLAM_Ours.m` still contains the original internal structure, including the PieADMM floor and weighted LM refinement used by RiLO-PGO.
-- If you later want to add SL-based hyperparameter prediction back into the public package, the current structure leaves room for that extension without changing the entry scripts.
+- The public examples are intended as runnable algorithm demonstrations, not
+  as a replacement for the complete experimental archive.
+- Runtime values from this compact package should be interpreted as practical
+  end-to-end reference timings for the included implementation and machine.
+- If redistribution is permitted, additional processed pose-graph inputs can
+  be added under `datasets/minimal_g2o/` without changing the entry scripts.
