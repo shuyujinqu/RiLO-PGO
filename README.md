@@ -43,8 +43,9 @@ This scope keeps the release focused on the algorithm introduced in the paper.
 ## Folder Layout
 
 ```text
-rilo_pgo_open_source_reviewer_ready/
+RiLO-PGO/
   README.md
+  LICENSE
   main_run_single_case.m
   main_run_minimal_suite.m
   datasets/
@@ -119,3 +120,7 @@ unweighted LM -> soft weighted LM -> hard weighted LM
   end-to-end reference timings for the included implementation and machine.
 - If redistribution is permitted, additional processed pose-graph inputs can
   be added under `datasets/minimal_g2o/` without changing the entry scripts.
+
+## License
+
+This compact reference implementation is released under the MIT License.
